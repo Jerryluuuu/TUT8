@@ -1,0 +1,298 @@
+---
+title: "Airbnb EDA for Paris."
+author: 
+  - Jerry Lu
+thanks: "Code and data are available at: https://github.com/Jerryluuuu/TUT8.git"
+date: 5 March, 2024
+date-format: long
+format: pdf
+number-sections: true
+bibliography: references.bib
+---
+
+```{r}
+#| include: false
+#| warning: false
+#| message: false
+library(naniar)
+library(tidyverse)
+library(arrow)
+library(janitor)
+library(modelsummary)
+```
+The dataset comes from Inside Airbnb (Cox 2021), and we'll read it from their website before saving a copy locally. We can send read_csv() a link to the dataset, and it will download it. 
+```{r}
+url <-
+  paste0(
+    
+    "http://data.insideairbnb.com/france/ile-de-france/",
+    "paris/2023-12-12/data/listings.csv.gz"
+    
+    )
+
+airbnb_data <-
+  read_csv(
+    file = url,
+    guess_max = 20000
+  )
+
+write_csv(airbnb_data, "airbnb_data.csv")
+
+airbnb_data
+```
+
+Extract variable that interested in the project from dataset.
+Including: host_id,
+    host_response_time,
+    host_is_superhost,
+    host_total_listings_count,
+    neighbourhood_cleansed,
+    bathrooms,
+    bedrooms,
+    price,
+    number_of_reviews,
+    review_scores_rating,
+    review_scores_accuracy,
+    review_scores_value
+```{r}
+airbnb_data_selected <-
+  airbnb_data |>
+  select(
+    host_id,
+    host_response_time,
+    host_is_superhost,
+    host_total_listings_count,
+    neighbourhood_cleansed,
+    bathrooms,
+    bedrooms,
+    price,
+    number_of_reviews,
+    review_scores_rating,
+    review_scores_accuracy,
+    review_scores_value
+  )
+
+write_parquet(
+  x = airbnb_data_selected, 
+  sink = 
+    "2023-12-12-paris-airbnblistings-select_variables.parquet"
+  )
+
+rm(airbnb_data)
+```
+
+Price might be the first thing we want to know. Right now it's a character, so we need to change it to a number. There are a lot of these, so we need to be careful that they don't all just turn into NAs. It will go to "NA" if we only force the price variable to be a number, since there are many characters that don't have a clear number equivalent, like "$." To begin, we need to get rid of those characters.
+
+```{r}
+airbnb_data_selected$price |>
+  head()
+airbnb_data_selected$price |>
+  str_split("") |>
+  unlist() |>
+  unique()
+airbnb_data_selected |>
+  select(price) |>
+  filter(str_detect(price, ","))
+```
+## Distribution and properties of individual variables 
+```{r}
+airbnb_data_selected <-
+  airbnb_data_selected |>
+  mutate(
+    price = str_remove_all(price, "[\\$,]"),
+    price = as.integer(price)
+  )
+```
+
+We'll get rid of all prices above $999 for now. Superhosts are Airbnb hosts with a lot of knowledge, and we might want to find out more about them. We wouldn't expect any NAs because a host is either a superhost or it's not. We can see that there are NAs, though. It's possible that the host took down a post or something similar, but we need to find out more about this. We will also need to turn this into a binary variable. The current value is true/false, which works fine for modelling. However, there are a few times when a 0/1 would be more useful. And for now, we'll just get rid of anyone who gave us a NA for "superhost." It's harder to deal with the NAs in "review_scores_rating" because there are so many of them. This could be because they don't have any reviews.
+
+```{r}
+#| fig-cap: Distribution of prices of Paris Airbnb rentals 
+airbnb_data_less_1000 <-
+  airbnb_data_selected |>
+  filter(price < 1000)
+
+airbnb_data_no_superhost_nas <-
+  airbnb_data_less_1000 |>
+  filter(!is.na(host_is_superhost)) |>
+  mutate(
+    host_is_superhost_binary =
+      as.numeric(host_is_superhost)
+  )
+airbnb_data_has_reviews <-
+  airbnb_data_no_superhost_nas |>
+  filter(!is.na(review_scores_rating))
+```
+
+Guests can rate an Airbnb listing with one to five stars based on many factors, such as cleaning, accuracy, value, and more. However, when we look at the reviews in our dataset, it's clear that it's really a binary, with ratings being either five stars or not so much.
+
+```{r}
+#| warning: False
+#| fig-cap: Distribution of review scores rating for Paris Airbnb rentals
+airbnb_data_no_superhost_nas |>
+  ggplot(aes(x = review_scores_rating)) +
+  geom_bar() +
+  theme_classic() +
+  labs(
+    x = "Review scores rating",
+    y = "Number of properties"
+  )
+```
+
+Another key consideration is how quickly a host replies to a request. Airbnb gives hosts up to 24 hours to react, but prefers responses within an hour.
+It is not evident how a host might have a response time of NA. Perhaps this is related to another variable. Interestingly, what appear to be "NAs" in the "host_response_time" variable are not classified as proper NAs, but are instead considered as a different category. We'll recode them as actual NAs and modify the variable to a factor.
+The abundance of NAs creates a problem. For example, we could want to examine if there is a correlation with the review score. There are numerous reviews with an overall rating of 100.
+
+```{r}
+#| fig-cap: Distribution of review scores for properties with NA response time, for Paris Airbnb rentals 
+
+
+airbnb_data_has_reviews |>
+  count(host_response_time)
+
+airbnb_data_has_reviews <-
+  airbnb_data_has_reviews |>
+  mutate(
+    host_response_time = if_else(
+      host_response_time == "N/A",
+      NA_character_,
+      host_response_time
+    ),
+    host_response_time = factor(host_response_time)
+  )
+airbnb_data_has_reviews |>
+  filter(is.na(host_response_time)) |>
+  ggplot(aes(x = review_scores_rating)) +
+  geom_histogram(binwidth = 1) +
+  theme_classic() +
+  labs(
+    x = "Average review score",
+    y = "Number of properties"
+  )
+```
+
+Usually missing values are dropped by `ggplot2`. We can use `geom_miss_point()` from `naniar` to include them in the graph
+
+```{r}
+#| fig-cap:  Missing values in Paris Airbnb data, by host response time
+
+airbnb_data_has_reviews |>
+  ggplot(aes(
+    x = host_response_time,
+    y = review_scores_accuracy
+  )) +
+  geom_miss_point() +
+  labs(
+    x = "Host response time",
+    y = "Review score accuracy",
+    color = "Is missing?"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+
+```{r}
+airbnb_data_selected <-
+  airbnb_data_has_reviews |>
+  filter(!is.na(host_response_time))
+```
+
+We might be interested in how many properties a host has on Airbnb 
+
+```{r}
+#| warning: false
+#| message: false
+#| fig-cap: Distribution of the number of properties a host has on Airbnb, forParis Airbnb rentals
+
+airbnb_data_selected |>
+  ggplot(aes(x = host_total_listings_count)) +
+  geom_histogram() +
+  scale_x_log10() +
+  labs(
+    x = "Total number of listings, by host",
+    y = "Number of hosts"
+  )
+```
+
+```{r}
+airbnb_data_selected |>
+  filter(host_total_listings_count >= 500) |>
+  head()
+airbnb_data_selected <-
+  airbnb_data_selected |>
+  add_count(host_id) |>
+  filter(n == 1) |>
+  select(-n)
+```
+
+We might want to create some graphs to see if any links between variables become apparent. Some things that come to mind include comparing costs to ratings, superhosts, the amount of properties, and the neighbourhood.
+For properties with multiple reviews, we may analyse the relationship between pricing and reviews, as well as if they are a super-host.
+
+```{r}
+#| fig-cap:  Relationship between price and review and whether a host is a superhost, for Paris Airbnb rentals
+
+airbnb_data_selected |>
+  filter(number_of_reviews > 1) |>
+  ggplot(aes(x = price, y = review_scores_rating, 
+             color = host_is_superhost)) +
+  geom_point(size = 1, alpha = 0.1) +
+  theme_classic() +
+  labs(
+    x = "Price per night",
+    y = "Average review score",
+    color = "Superhost"
+  ) +
+  scale_color_brewer(palette = "Set1")
+```
+
+One of the characteristics that may distinguish a superhost is how rapidly they answer to requests. One may believe that being a superhost entails fast responding yes or no to requests. Let's look at the data. First, we'll look at the possible values of superhost based on their response times.
+Fortunately, it appears that when we removed the review rows, we also removed any NAs from whether they were a superhost, but if we go back and investigate, we may need to double-check. Using the `tabyl()` function from `janitor`, we might create a table that compares a host's response time to whether they are a superhost. It is evident that if a host does not answer within an hour, they are unlikely to be a Superhost.
+Finally, we could look at the neighbourhood. The data provider has attempted to clean the neighbourhood variable for us, thus we will continue to use it for now. However, if we were to use this variable in our actual research, we would want to investigate how it was produced.
+
+```{r}
+airbnb_data_selected |>
+  count(host_is_superhost) |>
+  mutate(
+    proportion = n / sum(n),
+    proportion = round(proportion, digits = 2)
+  )
+airbnb_data_selected |>
+  tabyl(host_response_time, host_is_superhost) |>
+  adorn_percentages("col") |>
+  adorn_pct_formatting(digits = 0) |>
+  adorn_ns() |>
+  adorn_title()
+airbnb_data_selected |>
+  tabyl(neighbourhood_cleansed) |>
+  adorn_pct_formatting() |>
+  arrange(-n) |>
+  filter(n > 100) |>
+  adorn_totals("row") |>
+  head()
+```
+
+During EDA, we can use models to help us understand how different factors in a dataset may be related to each other. As an example, we might want to see if we can guess if someone is a superhost and what factors could explain that. Because the result is either yes or no, this is a good time to use logistic regression. We think that being a superhost will lead to faster replies and better reviews.
+
+```{r}
+logistic_reg_superhost_response_review <-
+  glm(
+    host_is_superhost ~
+      host_response_time +
+      review_scores_rating,
+    data = airbnb_data_selected,
+    family = binomial
+  )
+```
+
+```{r}
+#| tbl-cap: Explaining whether a host is a superhost based on their response time
+modelsummary(logistic_reg_superhost_response_review)
+```
+
+```{r}
+write_parquet(
+  x = airbnb_data_selected, 
+  sink = "2023-12-12-paris-airbnblistings-analysis_dataset.parquet"
+  )
+```
+
+# Reference 
