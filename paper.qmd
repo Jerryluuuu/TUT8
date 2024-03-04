@@ -20,7 +20,7 @@ library(arrow)
 library(janitor)
 library(modelsummary)
 ```
-The dataset comes from Inside Airbnb (Cox 2021), and we'll read it from their website before saving a copy locally. We can send read_csv() a link to the dataset, and it will download it. 
+The dataset comes from @InsideAirbnb (Cox 2021), and we'll read it from their website before saving a copy locally, and the example from @STA302 that i can learn to operate these code. We can send read_csv() a link to the dataset, and it will download it. Also, I have use R (@citeR), and addition tools such as `naniar`(@naniar), `tidyverse`(@tidyverse), `arrow`(@arrow), `janitor`(@janitor), `modelsummary`(@modelsummary). 
 ```{r}
 url <-
   paste0(
